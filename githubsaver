@@ -277,7 +277,7 @@ check_save_directory() {
             mkdir -p "$SAVE_DIR"
         fi
         cd "$SAVE_DIR"
-        LOG_FILE="save_$(date +%Y%m%d_%H%M%S).log"
+        LOG_FILE="$(pwd)/save_$(date +%Y%m%d_%H%M%S).log"
         log_message "Création du dossier $SAVE_DIR" true
     fi
 }
