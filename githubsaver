@@ -1,0 +1,353 @@
+#!/bin/bash
+
+GREEN='\033[1;32m'
+BLUE='\033[1;34m'
+NC='\033[0m'
+
+export START_TIME=0
+export ELAPSED_TIME=0
+export CURRENT_REPO=0
+export TOTAL_REPOS=0
+export PROGRESS_RUNNING=true
+export PROGRESS_PID=""
+
+LOG_FILE="save_$(date +%Y%m%d_%H%M%S).log"
+
+log_message() {
+    local message=$1
+    local with_color=${2:-false}
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $message" >> "$LOG_FILE"
+    if [ "$with_color" = true ]; then
+        echo -e "$(date '+%Y-%m-%d %H:%M:%S') - $message"
+    else
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - $message"
+    fi
+}
+
+format_time() {
+    local time_in_seconds=$1
+    local hours=$((time_in_seconds/3600))
+    local minutes=$(((time_in_seconds%3600)/60))
+    local seconds=$((time_in_seconds%60))
+    local milliseconds=$((RANDOM%1000))
+    printf "%02d:%02d:%02d:%03d" $hours $minutes $seconds $milliseconds
+}
+
+update_current_branch() {
+    git pull
+}
+
+update_all_branches() {
+    local default_branch=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+    git fetch --all 2>&1 | tee -a "$LOG_FILE"
+    git pull --all 2>&1 | tee -a "$LOG_FILE"
+    for branch in $(git branch -r | grep -v '\->'); do
+        branch_name=$(echo $branch | sed 's/origin\///')
+        log_message "Mise à jour de la branche ${BLUE}${branch_name}${NC}" true
+        git checkout $branch_name 2>/dev/null || git checkout -b $branch_name $branch
+        git pull origin $branch_name 2>&1 | tee -a "$LOG_FILE"
+    done
+    log_message "Retour à la branche ${BLUE}${default_branch}${NC}" true
+    git checkout "$default_branch" 2>&1 | tee -a "$LOG_FILE"
+}
+
+update_repo() {
+    local repo_name=$1
+    log_message "Mise à jour du dépôt ${GREEN}${repo_name}${NC}" true
+    cd "$repo_name"
+    update_all_branches
+    cd ..
+}
+
+clone_repo() {
+    local repo_url=$1
+    local repo_name=$2
+    log_message "Clonage de ${GREEN}${repo_name}${NC}" true
+    git clone $repo_url "$repo_name" 2>&1 | tee -a "$LOG_FILE"
+    if [ $? -eq 0 ]; then
+        cd "$repo_name"
+        git fetch --all 2>&1 | tee -a "$LOG_FILE"
+        for branch in $(git branch -r | grep -v '\->'); do
+            branch_name=$(echo $branch | sed 's/origin\///')
+            log_message "Création de la branche ${BLUE}${branch_name}${NC}" true
+            git checkout -b $branch_name $branch 2>/dev/null || true
+        done
+        cd ..
+    else
+        log_message "ERREUR: Échec du clonage de ${GREEN}${repo_name}${NC}" true
+    fi
+}
+
+show_help() {
+    echo -e "${BLUE}Usage: $0 [OPTIONS]${NC}"
+    echo -e "${BLUE}Options:${NC}"
+    echo -e "  ${GREEN}--all, -a${NC}                Mettre à jour tous les dépôts et leurs branches"
+    echo -e "  ${GREEN}--master${NC}                 Mettre à jour tous les dépôts (branche par défaut uniquement)"
+    echo -e "  ${GREEN}--set-token${NC} <token>      Enregistrer un nouveau token"
+    echo -e "  ${GREEN}--show-token${NC}             Afficher le token actuel"
+    echo -e "  ${GREEN}--last-save${NC}              Afficher la dernière sauvegarde"
+    echo -e "  ${GREEN}--show-save${NC}              Afficher une sauvegarde spécifique"
+    echo -e "  ${GREEN}--help, -h${NC}               Afficher cette aide"
+    exit 0
+}
+
+set_token() {
+    if [ -z "$1" ]; then
+        echo "Erreur: Token manquant"
+        exit 1
+    fi
+    echo "$1" > .token
+    echo "Token enregistré avec succès"
+    exit 0
+}
+
+show_token() {
+    if [ -f ".token" ]; then
+        echo "Token actuel:"
+        cat .token
+    else
+        echo "Aucun token trouvé"
+    fi
+    exit 0
+}
+
+show_last_save() {
+    local has_info=false
+    echo -e "${BLUE}=== Informations de la dernière sauvegarde ===${NC}"
+    echo
+    local last_log=$(ls -t save_*.log 2>/dev/null | head -n 1)
+    if [ -n "$last_log" ]; then
+        local save_date=$(echo $last_log | sed 's/save_\([0-9]\{8\}_[0-9]\{6\}\)\.log/\1/')
+        local formatted_date=$(date -j -f "%Y%m%d_%H%M%S" "$save_date" "+%Y-%m-%d %H:%M:%S")
+        local seconds_since=$(( $(date +%s) - $(date -j -f "%Y-%m-%d %H:%M:%S" "$formatted_date" +%s) ))
+        local days_since=$((seconds_since / 86400))
+        local hours_since=$((seconds_since % 86400 / 3600))
+        local minutes_since=$((seconds_since % 3600 / 60))
+        echo -e "Date de la dernière sauvegarde: ${GREEN}$formatted_date${NC}"
+        echo -e "Il y a : ${GREEN}$days_since jours, $hours_since heures, $minutes_since minutes${NC}"
+        has_info=true
+    else
+        echo "Aucune sauvegarde trouvée"
+    fi
+    echo
+    echo -e "${BLUE}=== Journal de la dernière sauvegarde ===${NC}"
+    echo
+    if [ -n "$last_log" ]; then
+        echo -e "Fichier de log: ${GREEN}$last_log${NC}"
+        echo -e "${BLUE}----------------------------------------${NC}"
+        sed 's/\\033/\x1B/g' "$last_log"
+    else
+        echo "Aucun fichier de log trouvé"
+    fi
+    if [ "$has_info" = false ]; then
+        echo "Aucune information de sauvegarde disponible"
+    fi
+    exit 0
+}
+
+init_progress_area() {
+    local lines=$(tput lines)
+    local scroll_region=$((lines - 3))
+    START_TIME=$(date +%s)
+    clear
+    tput csr 0 $scroll_region
+    printf "\n\n"
+    tput sc
+    tput cup $((lines - 2)) 0
+    printf "%${COLUMNS}s" | tr " " "-"
+    tput cup $((lines - 1)) 0
+    printf "Progression: [%${width}s] 0%% | Temps: 00:00:00:000 / 00:00:00:000 | Repos: 0/${TOTAL_REPOS}" " "
+    tput rc
+    tput cup 0 0
+    update_progress &
+    PROGRESS_PID=$!
+}
+
+show_progress() {
+    CURRENT_REPO=$(cat /tmp/current_repo 2>/dev/null || echo 0)
+    TOTAL_REPOS=$(cat /tmp/total_repos 2>/dev/null || echo 1)
+    local width=50
+    local filled_width=0
+    if [ $TOTAL_REPOS -ne 0 ]; then
+        filled_width=$(( (CURRENT_REPO * width) / TOTAL_REPOS ))
+        percentage=$(( (CURRENT_REPO * 100) / TOTAL_REPOS ))
+    fi
+    local lines=$(tput lines)
+    local current_time=$(date +%s)
+    local elapsed=$((current_time - START_TIME))
+    local formatted_time=$(format_time $elapsed)
+    local total_estimated=$((TOTAL_REPOS * 10))
+    local remaining_time=$((total_estimated - elapsed))
+    if [ $remaining_time -lt 0 ]; then
+        remaining_time=0
+    fi
+    local formatted_estimated=$(format_time $remaining_time)
+    tput sc
+    tput cup $((lines - 1)) 0
+    tput el
+    printf "Progression: ["
+    for ((i=0; i<width; i++)); do
+        if [ $i -lt $filled_width ]; then
+            printf "#"
+        else
+            printf " "
+        fi
+    done
+    printf "] %3d%% | Temps: %s / %s | Repos: %d/%d" \
+           $percentage "$formatted_time" "$formatted_estimated" $CURRENT_REPO $TOTAL_REPOS
+    tput rc
+}
+
+update_progress() {
+    while $PROGRESS_RUNNING; do
+        show_progress
+        sleep 0.1
+    done
+}
+
+update_repo_count() {
+    echo $CURRENT_REPO > /tmp/current_repo
+}
+
+cleanup_terminal() {
+    PROGRESS_RUNNING=false
+    if [ ! -z "$PROGRESS_PID" ]; then
+        kill $PROGRESS_PID 2>/dev/null
+        wait $PROGRESS_PID 2>/dev/null
+    fi
+    rm -f /tmp/current_repo /tmp/total_repos
+    tput rmcup
+    tput cnorm
+    tput csr 0 $(tput lines)
+    clear
+    exit 0
+}
+
+handle_interrupt() {
+    cleanup_terminal
+}
+
+show_save() {
+    echo -e "${BLUE}=== Sauvegardes disponibles ===${NC}"
+    echo
+    local logs=($(ls -t save_*.log 2>/dev/null))
+    local count=${#logs[@]}
+    if [ $count -eq 0 ]; then
+        echo "Aucune sauvegarde trouvée"
+        exit 1
+    fi
+    for ((i=0; i<$count; i++)); do
+        local log_file=${logs[$i]}
+        local save_date=$(echo $log_file | sed 's/save_\([0-9]\{8\}_[0-9]\{6\}\)\.log/\1/')
+        local formatted_date=$(date -j -f "%Y%m%d_%H%M%S" "$save_date" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+        echo -e "${GREEN}$((i+1))${NC}) $formatted_date - ${BLUE}$log_file${NC}"
+    done
+    echo
+    echo -n "Choisissez une sauvegarde (1-$count) : "
+    read choice
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ $choice -lt 1 ] || [ $choice -gt $count ]; then
+        echo "Choix invalide"
+        exit 1
+    fi
+    local selected_log=${logs[$((choice-1))]}
+    local selected_date=$(echo $selected_log | sed 's/save_\([0-9]\{8\}_[0-9]\{6\}\)\.log/\1/')
+    local formatted_selected_date=$(date -j -f "%Y%m%d_%H%M%S" "$selected_date" "+%Y-%m-%d %H:%M:%S")
+    echo
+    echo -e "${BLUE}=== Informations de la sauvegarde sélectionnée ===${NC}"
+    echo
+    local seconds_since=$(( $(date +%s) - $(date -j -f "%Y-%m-%d %H:%M:%S" "$formatted_selected_date" +%s) ))
+    local days_since=$((seconds_since / 86400))
+    local hours_since=$((seconds_since % 86400 / 3600))
+    local minutes_since=$((seconds_since % 3600 / 60))
+    echo -e "Date de la sauvegarde: ${GREEN}$formatted_selected_date${NC}"
+    echo -e "Temps écoulé: ${GREEN}$days_since jours, $hours_since heures, $minutes_since minutes${NC}"
+    echo
+    echo -e "${BLUE}=== Journal de la sauvegarde ===${NC}"
+    echo
+    echo -e "Fichier de log: ${GREEN}$selected_log${NC}"
+    echo -e "${BLUE}----------------------------------------${NC}"
+    sed 's/\\033/\x1B/g' "$selected_log"
+    exit 0
+}
+
+case "$1" in
+    --help|-h)
+        show_help
+        ;;
+    --set-token)
+        set_token "$2"
+        ;;
+    --show-token)
+        show_token
+        ;;
+    --last-save)
+        show_last_save
+        ;;
+    --show-save)
+        show_save
+        ;;
+    --all|-a)
+        if [ ! -f ".token" ]; then
+            echo "Erreur: Token non trouvé. Utilisez --set-token pour configurer votre token."
+            exit 1
+        fi
+        TOKEN=$(cat ".token" 2>/dev/null | tr -d '\n\r ')
+        if [ -z "$TOKEN" ]; then
+            echo "Erreur: Token vide"
+            exit 1
+        fi
+        trap handle_interrupt INT TERM EXIT
+        echo 0 > /tmp/current_repo
+        tput smcup
+        tput civis
+        log_message "Début de la sauvegarde complète"
+        REPOS=$(curl -s -H "Authorization: token $TOKEN" "https://api.github.com/user/repos" | jq -r '.[].ssh_url')
+        TOTAL_REPOS=$(echo "$REPOS" | wc -l)
+        echo $TOTAL_REPOS > /tmp/total_repos
+        CURRENT_REPO=0
+        echo $CURRENT_REPO > /tmp/current_repo
+        init_progress_area
+        for REPO in $REPOS; do
+            REPO_NAME=$(basename $REPO .git)
+            if [ -d "$REPO_NAME" ]; then
+                update_repo "$REPO_NAME"
+            else
+                clone_repo "$REPO" "$REPO_NAME"
+            fi
+            CURRENT_REPO=$((CURRENT_REPO + 1))
+            update_repo_count
+        done
+        log_message "Fin de la sauvegarde"
+        cleanup_terminal
+        ;;
+    --master)
+        TOKEN=$(cat ".token" | tr -d '\n\r ')
+        REPOS=$(curl -s -H "Authorization: token $TOKEN" "https://api.github.com/user/repos" | jq -r '.[].ssh_url')
+        TOTAL_REPOS=$(echo "$REPOS" | wc -l)
+        CURRENT_REPO=0
+        init_progress_area
+        for REPO in $REPOS; do
+            CURRENT_REPO=$((CURRENT_REPO + 1))
+            REPO_NAME=$(basename $REPO .git)
+            if [ -d "$REPO_NAME" ]; then
+                printf "Mise à jour de \033[1;32m%s\033[0m (branche par défaut)...\n" "$REPO_NAME"
+                cd "$REPO_NAME"
+                update_current_branch
+                cd ..
+            else
+                clone_repo "$REPO" "$REPO_NAME"
+            fi
+        done
+        cleanup_terminal
+        ;;
+    "")
+        show_help
+        ;;
+    *)
+        echo "Option invalide: $1"
+        echo "Utilisez --help pour voir les options disponibles"
+        exit 1
+        ;;
+esac
+
+trap cleanup_terminal EXIT INT TERM
