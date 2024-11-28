@@ -12,6 +12,7 @@ export PROGRESS_RUNNING=true
 export PROGRESS_PID=""
 
 LOG_FILE="save_$(date +%Y%m%d_%H%M%S).log"
+SAVE_DIR="save_repos"
 
 log_message() {
     local message=$1
@@ -63,10 +64,10 @@ clone_repo() {
     local repo_url=$1
     local repo_name=$2
     log_message "Clonage de ${GREEN}${repo_name}${NC}" true
-    git clone $repo_url "$repo_name" 2>&1 | tee -a "$LOG_FILE"
+    git clone $repo_url "$repo_name"
     if [ $? -eq 0 ]; then
         cd "$repo_name"
-        git fetch --all 2>&1 | tee -a "$LOG_FILE"
+        git fetch --all
         for branch in $(git branch -r | grep -v '\->'); do
             branch_name=$(echo $branch | sed 's/origin\///')
             log_message "Création de la branche ${BLUE}${branch_name}${NC}" true
@@ -115,7 +116,7 @@ show_last_save() {
     local has_info=false
     echo -e "${BLUE}=== Informations de la dernière sauvegarde ===${NC}"
     echo
-    local last_log=$(ls -t save_*.log 2>/dev/null | head -n 1)
+    local last_log=$(ls -t $SAVE_DIR/save_*.log 2>/dev/null | head -n 1)
     if [ -n "$last_log" ]; then
         local save_date=$(echo $last_log | sed 's/save_\([0-9]\{8\}_[0-9]\{6\}\)\.log/\1/')
         local formatted_date=$(date -j -f "%Y%m%d_%H%M%S" "$save_date" "+%Y-%m-%d %H:%M:%S")
@@ -230,7 +231,7 @@ handle_interrupt() {
 show_save() {
     echo -e "${BLUE}=== Sauvegardes disponibles ===${NC}"
     echo
-    local logs=($(ls -t save_*.log 2>/dev/null))
+    local logs=($(ls -t $SAVE_DIR/save_*.log 2>/dev/null))
     local count=${#logs[@]}
     if [ $count -eq 0 ]; then
         echo "Aucune sauvegarde trouvée"
@@ -270,6 +271,17 @@ show_save() {
     exit 0
 }
 
+check_save_directory() {
+    if [ "$(basename $(pwd))" != "$SAVE_DIR" ]; then
+        if [ ! -d "$SAVE_DIR" ]; then
+            mkdir -p "$SAVE_DIR"
+        fi
+        cd "$SAVE_DIR"
+        LOG_FILE="save_$(date +%Y%m%d_%H%M%S).log"
+        log_message "Création du dossier $SAVE_DIR" true
+    fi
+}
+
 case "$1" in
     --help|-h)
         show_help
@@ -300,7 +312,10 @@ case "$1" in
         echo 0 > /tmp/current_repo
         tput smcup
         tput civis
+        
+        check_save_directory
         log_message "Début de la sauvegarde complète"
+        
         REPOS=$(curl -s -H "Authorization: token $TOKEN" "https://api.github.com/user/repos" | jq -r '.[].ssh_url')
         TOTAL_REPOS=$(echo "$REPOS" | wc -l)
         echo $TOTAL_REPOS > /tmp/total_repos
@@ -317,6 +332,7 @@ case "$1" in
             CURRENT_REPO=$((CURRENT_REPO + 1))
             update_repo_count
         done
+        cd ..
         log_message "Fin de la sauvegarde"
         cleanup_terminal
         ;;
@@ -325,6 +341,7 @@ case "$1" in
         REPOS=$(curl -s -H "Authorization: token $TOKEN" "https://api.github.com/user/repos" | jq -r '.[].ssh_url')
         TOTAL_REPOS=$(echo "$REPOS" | wc -l)
         CURRENT_REPO=0
+        check_save_directory
         init_progress_area
         for REPO in $REPOS; do
             CURRENT_REPO=$((CURRENT_REPO + 1))
@@ -338,6 +355,7 @@ case "$1" in
                 clone_repo "$REPO" "$REPO_NAME"
             fi
         done
+        cd ..
         cleanup_terminal
         ;;
     "")

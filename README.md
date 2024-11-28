@@ -16,6 +16,9 @@ Un script Bash pour sauvegarder et synchroniser automatiquement tous vos dépôt
 ```bash
 chmod +x githubsaver
 ```
+
+**Note :** il se peut qu'un décalage se produise entre le moment ou vous ajouter à votre GitHub un nouveau dépôt et le moment ou le script le détecte. Ce décalage est du à la synchronisation des données entre GitHub et l'API GitHub.
+
 3. Configurez votre token GitHub :
 ### Initialisation du token GitHub
 
