@@ -75,6 +75,20 @@ Ensuite, enregistrez le token dans le script en utilisant la commande suivante :
 ./githubsaver --last-save
 ```
 
+### Arborescence des dossiers
+
+```
+README.md
+.gitignore
+.token
+githubsaver
+save_repos/
+    save_YYYYMMDD_HHMMSS.log
+    nom_du_dossier_du_repo_1/
+    nom_du_dossier_du_repo_2/
+    ...
+```
+
 ## 📊 Fonctionnalités
 
 - Barre de progression en temps réel

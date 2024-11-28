@@ -332,8 +332,8 @@ case "$1" in
             CURRENT_REPO=$((CURRENT_REPO + 1))
             update_repo_count
         done
-        cd ..
         log_message "Fin de la sauvegarde"
+        cd ..
         cleanup_terminal
         ;;
     --master)
