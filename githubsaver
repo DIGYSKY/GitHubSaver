@@ -116,7 +116,15 @@ show_last_save() {
     local has_info=false
     echo -e "${BLUE}=== Informations de la dernière sauvegarde ===${NC}"
     echo
-    local last_log=$(ls -t $SAVE_DIR/save_*.log 2>/dev/null | head -n 1)
+    # Vérifier si on est dans le dossier save_repos
+    if [ "$(basename $(pwd))" != "$SAVE_DIR" ]; then
+        cd "$SAVE_DIR" 2>/dev/null || {
+            echo "Aucune sauvegarde trouvée"
+            exit 1
+        }
+    fi
+    
+    local last_log=$(ls -t save_*.log 2>/dev/null | head -n 1)
     if [ -n "$last_log" ]; then
         local save_date=$(echo $last_log | sed 's/save_\([0-9]\{8\}_[0-9]\{6\}\)\.log/\1/')
         local formatted_date=$(date -j -f "%Y%m%d_%H%M%S" "$save_date" "+%Y-%m-%d %H:%M:%S")
@@ -136,13 +144,14 @@ show_last_save() {
     if [ -n "$last_log" ]; then
         echo -e "Fichier de log: ${GREEN}$last_log${NC}"
         echo -e "${BLUE}----------------------------------------${NC}"
-        sed 's/\\033/\x1B/g' "$last_log"
+        cat "$last_log" | sed 's/\\033/\x1B/g'
     else
         echo "Aucun fichier de log trouvé"
     fi
     if [ "$has_info" = false ]; then
         echo "Aucune information de sauvegarde disponible"
     fi
+    cd ..
     exit 0
 }
 
@@ -231,7 +240,15 @@ handle_interrupt() {
 show_save() {
     echo -e "${BLUE}=== Sauvegardes disponibles ===${NC}"
     echo
-    local logs=($(ls -t $SAVE_DIR/save_*.log 2>/dev/null))
+    # Vérifier si on est dans le dossier save_repos
+    if [ "$(basename $(pwd))" != "$SAVE_DIR" ]; then
+        cd "$SAVE_DIR" 2>/dev/null || {
+            echo "Aucune sauvegarde trouvée"
+            exit 1
+        }
+    fi
+    
+    local logs=($(ls -t save_*.log 2>/dev/null))
     local count=${#logs[@]}
     if [ $count -eq 0 ]; then
         echo "Aucune sauvegarde trouvée"
@@ -267,7 +284,8 @@ show_save() {
     echo
     echo -e "Fichier de log: ${GREEN}$selected_log${NC}"
     echo -e "${BLUE}----------------------------------------${NC}"
-    sed 's/\\033/\x1B/g' "$selected_log"
+    cat "$selected_log" | sed 's/\\033/\x1B/g'
+    cd ..
     exit 0
 }
 
