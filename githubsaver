@@ -39,15 +39,24 @@ update_current_branch() {
 }
 
 update_all_branches() {
+    local repo_name=$(basename $(pwd))
     local default_branch=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
     git fetch --all 2>&1 | tee -a "$LOG_FILE"
     git pull --all 2>&1 | tee -a "$LOG_FILE"
+    
     for branch in $(git branch -r | grep -v '\->'); do
         branch_name=$(echo $branch | sed 's/origin\///')
-        log_message "Mise à jour de la branche ${BLUE}${branch_name}${NC}" true
-        git checkout $branch_name 2>/dev/null || git checkout -b $branch_name $branch
-        git pull origin $branch_name 2>&1 | tee -a "$LOG_FILE"
+        
+        # Vérifier si la branche doit être ignorée
+        if ! should_ignore_branch "$repo_name" "$branch_name"; then
+            log_message "Mise à jour de la branche ${BLUE}${branch_name}${NC}" true
+            git checkout $branch_name 2>/dev/null || git checkout -b $branch_name $branch
+            git pull origin $branch_name 2>&1 | tee -a "$LOG_FILE"
+        else
+            log_message "Branche ignorée: ${BLUE}${branch_name}${NC}" true
+        fi
     done
+    
     log_message "Retour à la branche ${BLUE}${default_branch}${NC}" true
     git checkout "$default_branch" 2>&1 | tee -a "$LOG_FILE"
 }
@@ -300,6 +309,66 @@ check_save_directory() {
     fi
 }
 
+# Charger les patterns d'ignorance
+load_ignore_patterns() {
+    # Sauvegarder le répertoire courant
+    local current_dir=$(pwd)
+    
+    # Remonter au répertoire parent si nous sommes dans save_repos
+    if [ "$(basename $(pwd))" = "$SAVE_DIR" ]; then
+        cd ..
+    fi
+    
+    if [ -f ".githubsaverignore" ]; then
+        # Lire le fichier en ignorant les commentaires et les lignes vides
+        IGNORE_PATTERNS=($(grep -v '^#' .githubsaverignore | grep -v '^$'))
+        echo "Patterns d'ignorance chargés: ${IGNORE_PATTERNS[*]}" >&2
+    else
+        echo "Fichier .githubsaverignore non trouvé dans $(pwd)" >&2
+        IGNORE_PATTERNS=()
+    fi
+    
+    # Retourner au répertoire original
+    cd "$current_dir"
+}
+
+# Vérifier si un dépôt doit être ignoré
+should_ignore_repo() {
+    local repo_name=$1
+    for pattern in "${IGNORE_PATTERNS[@]}"; do
+        # Convertir le pattern en expression régulière
+        pattern_regex="^${pattern//\*/.*}$"
+        
+        # Si le pattern ne contient pas de '/', c'est un repo
+        if [[ "$pattern" != *"/"* ]] && [[ "$repo_name" =~ $pattern_regex ]]; then
+            return 0  # true, ignorer
+        fi
+    done
+    return 1  # false, ne pas ignorer
+}
+
+# Vérifier si une branche doit être ignorée
+should_ignore_branch() {
+    local repo_name=$1
+    local branch_name=$2
+    
+    for pattern in "${IGNORE_PATTERNS[@]}"; do
+        if [[ "$pattern" == *"/"* ]]; then
+            local repo_pattern=$(echo "$pattern" | cut -d'/' -f1)
+            local branch_pattern=$(echo "$pattern" | cut -d'/' -f2)
+            
+            # Convertir les wildcards en expressions régulières
+            repo_pattern="^${repo_pattern//\*/.*}$"
+            branch_pattern="^${branch_pattern//\*/.*}$"
+            
+            if [[ "$repo_name" =~ $repo_pattern && "$branch_name" =~ $branch_pattern ]]; then
+                return 0  # true, ignorer
+            fi
+        fi
+    done
+    return 1  # false, ne pas ignorer
+}
+
 case "$1" in
     --help|-h)
         show_help
@@ -331,6 +400,7 @@ case "$1" in
         tput smcup
         tput civis
         
+        load_ignore_patterns
         check_save_directory
         log_message "Début de la sauvegarde complète"
         
@@ -342,10 +412,14 @@ case "$1" in
         init_progress_area
         for REPO in $REPOS; do
             REPO_NAME=$(basename $REPO .git)
-            if [ -d "$REPO_NAME" ]; then
-                update_repo "$REPO_NAME"
+            if ! should_ignore_repo "$REPO_NAME"; then
+                if [ -d "$REPO_NAME" ]; then
+                    update_repo "$REPO_NAME"
+                else
+                    clone_repo "$REPO" "$REPO_NAME"
+                fi
             else
-                clone_repo "$REPO" "$REPO_NAME"
+                log_message "Dépôt ignoré: ${GREEN}${REPO_NAME}${NC}" true
             fi
             CURRENT_REPO=$((CURRENT_REPO + 1))
             update_repo_count
@@ -355,24 +429,49 @@ case "$1" in
         cleanup_terminal
         ;;
     --master)
+        if [ ! -f ".token" ]; then
+            echo "Erreur: Token non trouvé. Utilisez --set-token pour configurer votre token."
+            exit 1
+        fi
         TOKEN=$(cat ".token" | tr -d '\n\r ')
+        if [ -z "$TOKEN" ]; then
+            echo "Erreur: Token vide"
+            exit 1
+        fi
+        trap handle_interrupt INT TERM EXIT
+        echo 0 > /tmp/current_repo
+        tput smcup
+        tput civis
+        
+        load_ignore_patterns
+        check_save_directory
+        log_message "Début de la mise à jour des branches principales"
+        
         REPOS=$(curl -s -H "Authorization: token $TOKEN" "https://api.github.com/user/repos" | jq -r '.[].ssh_url')
         TOTAL_REPOS=$(echo "$REPOS" | wc -l)
+        echo $TOTAL_REPOS > /tmp/total_repos
         CURRENT_REPO=0
-        check_save_directory
+        echo $CURRENT_REPO > /tmp/current_repo
         init_progress_area
         for REPO in $REPOS; do
-            CURRENT_REPO=$((CURRENT_REPO + 1))
             REPO_NAME=$(basename $REPO .git)
-            if [ -d "$REPO_NAME" ]; then
-                printf "Mise à jour de \033[1;32m%s\033[0m (branche par défaut)...\n" "$REPO_NAME"
-                cd "$REPO_NAME"
-                update_current_branch
-                cd ..
+            if ! should_ignore_repo "$REPO_NAME"; then
+                if [ -d "$REPO_NAME" ]; then
+                    log_message "Mise à jour de ${GREEN}${REPO_NAME}${NC} (branche par défaut)" true
+                    cd "$REPO_NAME"
+                    update_current_branch
+                    cd ..
+                else
+                    clone_repo "$REPO" "$REPO_NAME"
+                fi
             else
-                clone_repo "$REPO" "$REPO_NAME"
+                log_message "Dépôt ignoré: ${GREEN}${REPO_NAME}${NC}" true
             fi
+            CURRENT_REPO=$((CURRENT_REPO + 1))
+            update_repo_count
         done
+        
+        log_message "Fin de la mise à jour"
         cd ..
         cleanup_terminal
         ;;

@@ -1,0 +1,15 @@
+# Ignorer des dépôts complets
+test-repo
+temp-*
+
+# Ignorer des branches spécifiques dans des dépôts
+myproject/dev
+myproject/feature-*
+another-repo/experimental
+
+# Les commentaires sont ignorés
+# Les lignes vides aussi
+
+# Supporte les wildcards * pour les noms de repos et de branches
+*-test/*
+*-backup

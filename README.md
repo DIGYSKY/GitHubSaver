@@ -58,6 +58,27 @@ Ensuite, enregistrez le token dans le script en utilisant la commande suivante :
 - `--show-save` : Affiche une liste des sauvegardes disponibles
 - `--help, -h` : Affiche l'aide
 
+### Ignorer des dépôts ou des branches
+
+Pour ignorer des dépôts ou des branches, créez un fichier `.githubsaverignore` dans le répertoire où se trouve le script. Ce fichier doit contenir les noms des dépôts ou des branches à ignorer, un par ligne.
+
+**Note :** Les commentaires (ligne commençant par `#`) sont ignorés, les lignes vides aussi.
+
+#### Exemples
+
+```
+# Ignorer des dépôts complets
+test-repo
+temp-*
+```
+
+```
+# Ignorer des branches spécifiques dans des dépôts
+myproject/dev
+myproject/feature-*
+another-repo/experimental
+```
+
 ### Exemples d'utilisation
 
 1. Sauvegarder tous les dépôts avec toutes les branches :
