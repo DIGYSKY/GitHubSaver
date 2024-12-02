@@ -2,6 +2,7 @@
 
 GREEN='\033[1;32m'
 BLUE='\033[1;34m'
+RED='\033[1;31m'
 NC='\033[0m'
 
 export START_TIME=0
@@ -97,6 +98,7 @@ show_help() {
     echo -e "  ${GREEN}--show-token${NC}             Afficher le token actuel"
     echo -e "  ${GREEN}--last-save${NC}              Afficher la dernière sauvegarde"
     echo -e "  ${GREEN}--show-save${NC}              Afficher une sauvegarde spécifique"
+    echo -e "  ${GREEN}--fetch${NC}                  Vérifier les différences avec les dépôts distants"
     echo -e "  ${GREEN}--help, -h${NC}               Afficher cette aide"
     exit 0
 }
@@ -369,6 +371,54 @@ should_ignore_branch() {
     return 1  # false, ne pas ignorer
 }
 
+# Ajouter cette nouvelle fonction après les autres fonctions et avant le case statement
+fetch_repo_status() {
+    local repo_name=$1
+    local status_output=""
+    
+    echo -e "Vérification du dépôt: ${GREEN}${repo_name}${NC}"
+    cd "$repo_name"
+    
+    # Fetch toutes les branches
+    git fetch --all &>/dev/null
+    
+    # Obtenir la branche courante
+    local current_branch=$(git rev-parse --abbrev-ref HEAD)
+    
+    # Vérifier les différences pour chaque branche
+    for branch in $(git branch -r | grep -v '\->'); do
+        branch_name=$(echo $branch | sed 's/origin\///')
+        
+        # Ignorer les branches listées dans .githubsaverignore
+        if ! should_ignore_branch "$repo_name" "$branch_name"; then
+            echo -e "Vérification de la branche: ${BLUE}${branch_name}${NC}"
+            # Compter le nombre de commits d'avance/retard
+            local ahead_behind=$(git rev-list --left-right --count origin/${branch_name}...${branch_name} 2>/dev/null)
+            if [ $? -eq 0 ]; then
+                local behind=$(echo $ahead_behind | awk '{print $1}')
+                local ahead=$(echo $ahead_behind | awk '{print $2}')
+                
+                if [[ "$behind" =~ ^[0-9]+$ ]] && [[ "$ahead" =~ ^[0-9]+$ ]]; then
+                    if [ $behind -gt 0 ] || [ $ahead -gt 0 ]; then
+                        status_output+="    ${BLUE}${branch_name}${NC}: "
+                        [ $behind -gt 0 ] && status_output+="${RED}${behind} commits en retard${NC} "
+                        [ $ahead -gt 0 ] && status_output+="${GREEN}${ahead} commits en avance${NC} "
+                        status_output+="\n"
+                    fi
+                fi
+            fi
+        fi
+    done
+    
+    # Afficher les résultats s'il y a des différences
+    if [ ! -z "$status_output" ]; then
+        echo -e "État du dépôt ${GREEN}${repo_name}${NC}:"
+        echo -e "$status_output"
+    fi
+    
+    cd ..
+}
+
 case "$1" in
     --help|-h)
         show_help
@@ -426,6 +476,8 @@ case "$1" in
         done
         log_message "Fin de la sauvegarde"
         cd ..
+        echo -e "\nAppuyez sur une touche pour continuer..."
+        read -n 1
         cleanup_terminal
         ;;
     --master)
@@ -473,7 +525,55 @@ case "$1" in
         
         log_message "Fin de la mise à jour"
         cd ..
+        echo -e "\nAppuyez sur une touche pour continuer..."
+        read -n 1
         cleanup_terminal
+        ;;
+    --fetch)
+        if [ ! -f ".token" ]; then
+            echo "Erreur: Token non trouvé. Utilisez --set-token pour configurer votre token."
+            exit 1
+        fi
+        TOKEN=$(cat ".token" 2>/dev/null | tr -d '\n\r ')
+        if [ -z "$TOKEN" ]; then
+            echo "Erreur: Token vide"
+            exit 1
+        fi
+        
+        # Vérifier et ajuster le répertoire de travail
+        if [ "$(basename $(pwd))" = "$SAVE_DIR" ]; then
+            cd ..
+        elif [ ! -d "save_repos" ]; then
+            echo "Erreur: Vous n'êtes pas dans le bon répertoire."
+            echo "Veuillez exécuter le script depuis le répertoire contenant 'save_repos'."
+            exit 1
+        fi
+        
+        load_ignore_patterns
+        echo -e "\nDébut de la vérification des dépôts"
+        
+        # Entrer dans le répertoire contenant les dépôts
+        cd save_repos
+        
+        REPOS=$(curl -s -H "Authorization: token $TOKEN" "https://api.github.com/user/repos" | jq -r '.[].ssh_url')
+        for REPO in $REPOS; do
+            REPO_NAME=$(basename $REPO .git)
+            if ! should_ignore_repo "$REPO_NAME"; then
+                if [ -d "$REPO_NAME" ]; then
+                    fetch_repo_status "$REPO_NAME"
+                else
+                    echo -e "Dépôt non cloné: ${GREEN}${REPO_NAME}${NC}"
+                fi
+            fi
+        done
+        
+        # Retourner au répertoire parent
+        cd ..
+        
+        echo -e "\nFin de la vérification"
+        
+        echo -e "\nAppuyez sur une touche pour continuer..."
+        read -n 1
         ;;
     "")
         show_help

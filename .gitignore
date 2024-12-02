@@ -1,3 +1,4 @@
 save_repos/
 .token
 *.log
+.githubsaverignore
